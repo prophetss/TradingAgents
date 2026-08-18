@@ -151,6 +151,28 @@ export OPENROUTER_API_KEY=...      # OpenRouter
 export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
 ```
 
+### AKShare data source (optional)
+
+This fork adds opt-in AKShare support for Chinese A-share daily prices and
+technical indicators. Install it with:
+
+```bash
+pip install ".[akshare]"
+```
+
+Use the vendor in a programmatic configuration:
+
+```python
+config["data_vendors"] = {
+    "core_stock_apis": "akshare",
+    "technical_indicators": "akshare",
+}
+```
+
+AKShare symbols are six-digit Chinese A-share codes, such as `600000`,
+`000001`, or `300750`. Existing `yfinance` defaults are unchanged. To use an
+ordered fallback, configure `yfinance,akshare`.
+
 For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials.
 
 For AWS Bedrock, install the extra with `pip install ".[bedrock]"`, set `llm_provider: "bedrock"`, configure AWS credentials (environment variables, `~/.aws/credentials`, or an IAM role) and `AWS_DEFAULT_REGION`, and use a Bedrock model ID, e.g. `us.anthropic.claude-opus-4-8-v1:0`.

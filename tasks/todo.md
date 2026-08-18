@@ -1,0 +1,12 @@
+- [ ] Add optional AKShare dependency and vendor registration
+  - Acceptance: `akshare` is available through the project extra and appears in the vendor map.
+  - Verify: focused routing tests.
+  - Files: `pyproject.toml`, `tradingagents/dataflows/interface.py`, `tradingagents/default_config.py`
+- [ ] Implement Chinese A-share OHLCV and indicator adapter
+  - Acceptance: normalized output matches existing tool contracts and failures are explicit.
+  - Verify: mocked adapter tests.
+  - Files: `tradingagents/dataflows/akshare.py`
+- [ ] Run regression and integration checks
+  - Acceptance: focused and full pytest suites pass; no secrets are present.
+  - Verify: pytest and git diff inspection.
+  - Files: `tests/test_akshare.py`
