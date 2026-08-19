@@ -4,6 +4,7 @@ from unittest import mock
 import pandas as pd
 import pytest
 
+import tradingagents.dataflows.stockstats_utils as stockstats_utils
 from tradingagents.dataflows import akshare
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.interface import route_to_vendor
@@ -101,3 +102,33 @@ def test_non_a_share_automatically_uses_yfinance(monkeypatch):
     result = route_to_vendor("get_stock_data", "AAPL", "2026-01-01", "2026-01-10")
 
     assert result == "YFINANCE_DATA"
+
+
+@pytest.mark.unit
+def test_load_ohlcv_uses_akshare_for_a_share(monkeypatch, tmp_path):
+    set_config({"data_cache_dir": str(tmp_path)})
+    today = pd.Timestamp("2026-01-10")
+    monkeypatch.setattr(stockstats_utils.pd.Timestamp, "today", staticmethod(lambda: today))
+    monkeypatch.setattr(
+        akshare,
+        "_fetch_history",
+        lambda *args: pd.DataFrame(
+            {
+                "Open": [100.0, 101.0],
+                "High": [102.0, 103.0],
+                "Low": [99.0, 100.0],
+                "Close": [101.0, 102.0],
+                "Volume": [1000, 1100],
+            },
+            index=pd.to_datetime(["2026-01-09", "2026-01-10"]),
+        ).rename_axis("Date"),
+    )
+    monkeypatch.setattr(
+        stockstats_utils.yf,
+        "download",
+        lambda *args, **kwargs: pytest.fail("Yahoo Finance must not be called for A-shares"),
+    )
+
+    result = stockstats_utils.load_ohlcv("600519.SH", "2026-01-10")
+
+    assert result["Close"].tolist() == [101.0, 102.0]
