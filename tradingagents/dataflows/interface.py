@@ -33,6 +33,15 @@ from .yfinance_news import get_global_news_yfinance, get_news_yfinance
 
 logger = logging.getLogger(__name__)
 
+
+def _is_a_share_symbol(symbol) -> bool:
+    """Recognize the explicit Yahoo-style suffixes used for Chinese A-shares."""
+    if not isinstance(symbol, str):
+        return False
+    value = symbol.strip().upper()
+    return len(value) == 9 and value[:6].isdigit() and value.endswith((".SH", ".SZ"))
+
+
 # Tools organized by category
 TOOLS_CATEGORIES = {
     "core_stock_apis": {
@@ -195,6 +204,16 @@ def route_to_vendor(method: str, *args, **kwargs):
             )
     else:
         vendor_chain = all_available_vendors
+
+    # Keep the existing yfinance default for global symbols, but route explicit
+    # Shanghai/Shenzhen A-share symbols to AKShare before Yahoo sees them.
+    if (
+        category in {"core_stock_apis", "technical_indicators"}
+        and vendor_config.strip().lower() == "yfinance"
+        and args
+        and _is_a_share_symbol(args[0])
+    ):
+        vendor_chain = ["akshare"]
 
     last_no_data: NoMarketDataError | None = None
     first_error: Exception | None = None

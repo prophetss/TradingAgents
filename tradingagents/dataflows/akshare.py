@@ -45,7 +45,7 @@ def _akshare_module():
 
 def _normalize_symbol(symbol: str) -> str:
     value = symbol.strip().upper()
-    for suffix in (".SS", ".SZ"):
+    for suffix in (".SH", ".SS", ".SZ"):
         if value.endswith(suffix):
             value = value[: -len(suffix)]
     if len(value) != 6 or not value.isdigit():

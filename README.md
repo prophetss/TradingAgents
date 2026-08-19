@@ -153,8 +153,9 @@ export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
 
 ### AKShare data source (optional)
 
-This fork adds opt-in AKShare support for Chinese A-share daily prices and
-technical indicators. Install it with:
+This fork routes Chinese A-share daily prices and technical indicators through
+AKShare, while other symbols continue to use Yahoo Finance. Install AKShare
+support with:
 
 ```bash
 pip install ".[akshare]"
@@ -169,9 +170,10 @@ config["data_vendors"] = {
 }
 ```
 
-AKShare symbols are six-digit Chinese A-share codes, such as `600000`,
-`000001`, or `300750`. Existing `yfinance` defaults are unchanged. To use an
-ordered fallback, configure `yfinance,akshare`.
+Symbols ending in `.SH` or `.SZ` are recognized as A-shares, for example
+`600000.SH` and `000001.SZ`. Six-digit symbols without an exchange suffix can
+still be selected explicitly with the `akshare` vendor. To use an ordered
+fallback, configure `yfinance,akshare`.
 
 For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials.
 
