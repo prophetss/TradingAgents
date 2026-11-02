@@ -259,7 +259,7 @@ class TradingAgentsGraph:
         actual_holding_days)`` or ``(None, None, None)`` if price data is
         unavailable (too recent, delisted, or network error).
         """
-        from tradingagents.dataflows.symbol_utils import normalize_symbol
+        from tradingagents.dataflows.symbol_utils import a_share_yahoo_symbol, normalize_symbol
 
         try:
             start = datetime.strptime(trade_date, "%Y-%m-%d")
@@ -267,9 +267,12 @@ class TradingAgentsGraph:
             end_str = end.strftime("%Y-%m-%d")
 
             # Normalize so the realized-return lookup hits the same instrument
-            # the analysis priced (e.g. XAUUSD -> GC=F) (#984). The benchmark is
-            # already a canonical Yahoo symbol from ``_resolve_benchmark``.
-            stock = yf.Ticker(normalize_symbol(ticker)).history(start=trade_date, end=end_str)
+            # the analysis priced (e.g. XAUUSD -> GC=F) (#984). A-share symbols
+            # priced via AKShare use the broker .SH suffix, which Yahoo does not
+            # know - resolve to Yahoo's .SS form or the lookup always comes back
+            # empty and the memory-log entry stays pending forever.
+            resolved = a_share_yahoo_symbol(ticker) or normalize_symbol(ticker)
+            stock = yf.Ticker(resolved).history(start=trade_date, end=end_str)
             bench = yf.Ticker(benchmark).history(start=trade_date, end=end_str)
 
             if len(stock) < 2 or len(bench) < 2:

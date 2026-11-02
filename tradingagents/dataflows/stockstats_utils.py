@@ -9,7 +9,11 @@ from stockstats import wrap
 from yfinance.exceptions import YFRateLimitError
 
 from .config import get_config
-from .symbol_utils import NoMarketDataError, normalize_symbol
+from .symbol_utils import (
+    NoMarketDataError,
+    is_a_share_symbol as _is_a_share_symbol,
+    normalize_symbol,
+)
 from .utils import safe_ticker_component
 
 logger = logging.getLogger(__name__)
@@ -24,14 +28,6 @@ MAX_OHLCV_STALE_DAYS = 10
 # up today's close soon after it publishes, long enough that a day with no bar
 # at all (weekend, holiday) cannot trigger a download on every call.
 OHLCV_CACHE_TTL_SECONDS = 900
-
-
-def _is_a_share_symbol(symbol: str) -> bool:
-    """Recognize the explicit Shanghai/Shenzhen A-share ticker form."""
-    if not isinstance(symbol, str):
-        return False
-    value = symbol.strip().upper()
-    return len(value) == 9 and value[:6].isdigit() and value.endswith((".SH", ".SZ"))
 
 
 def yf_retry(func, max_retries=3, base_delay=2.0):

@@ -133,9 +133,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "data_vendors": {
         "core_stock_apis": "yfinance",       # Options: akshare, alpha_vantage, yfinance
         "technical_indicators": "yfinance",  # Options: akshare, alpha_vantage, yfinance
-        "fundamental_data": "yfinance",      # Options: alpha_vantage, yfinance
-        "news_data": "yfinance",             # Options: alpha_vantage, yfinance
-        "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
+        "fundamental_data": "yfinance",      # Options: akshare (A-shares), alpha_vantage, yfinance
+        "news_data": "yfinance",             # Options: akshare (A-shares), alpha_vantage, yfinance
+        # FRED first (US/global series, needs FRED_API_KEY); AKShare China macro
+        # (CPI/LPR/M2/GDP/PMI, keyless) as fallback for China-focused analysis.
+        "macro_data": "fred,akshare",        # Options: fred, akshare
         "prediction_markets": "polymarket",  # Options: polymarket (keyless)
     },
     # Tool-level configuration (takes precedence over category-level)
@@ -158,6 +160,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
         ".TO":  "^GSPTSE",     # Toronto (TSX Composite)
         ".AX":  "^AXJO",       # Australia (ASX 200)
         ".SS":  "000001.SS",   # Shanghai (SSE Composite)
+        ".SH":  "000001.SS",   # Shanghai, broker/AKShare suffix (same index)
         ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
         "":     "SPY",         # default for US-listed tickers (no suffix)
     },

@@ -1,6 +1,15 @@
 import logging
 
-from .akshare import get_indicator as get_akshare_indicator, get_stock as get_akshare_stock
+from .akshare import (
+    get_balance_sheet as get_akshare_balance_sheet,
+    get_cashflow as get_akshare_cashflow,
+    get_fundamentals as get_akshare_fundamentals,
+    get_income_statement as get_akshare_income_statement,
+    get_indicator as get_akshare_indicator,
+    get_news as get_akshare_news,
+    get_stock as get_akshare_stock,
+)
+from .akshare_macro import get_macro_data as get_akshare_macro_data
 from .alpha_vantage import (
     get_balance_sheet as get_alpha_vantage_balance_sheet,
     get_cashflow as get_alpha_vantage_cashflow,
@@ -20,6 +29,7 @@ from .errors import (
 )
 from .fred import get_macro_data as get_fred_macro_data
 from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
+from .symbol_utils import is_a_share_symbol, is_china_etf_symbol
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -32,14 +42,6 @@ from .y_finance import (
 from .yfinance_news import get_global_news_yfinance, get_news_yfinance
 
 logger = logging.getLogger(__name__)
-
-
-def _is_a_share_symbol(symbol) -> bool:
-    """Recognize the explicit Yahoo-style suffixes used for Chinese A-shares."""
-    if not isinstance(symbol, str):
-        return False
-    value = symbol.strip().upper()
-    return len(value) == 9 and value[:6].isdigit() and value.endswith((".SH", ".SZ"))
 
 
 # Tools organized by category
@@ -118,23 +120,28 @@ VENDOR_METHODS = {
     },
     # fundamental_data
     "get_fundamentals": {
+        "akshare": get_akshare_fundamentals,
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
     },
     "get_balance_sheet": {
+        "akshare": get_akshare_balance_sheet,
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
     },
     "get_cashflow": {
+        "akshare": get_akshare_cashflow,
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
     },
     "get_income_statement": {
+        "akshare": get_akshare_income_statement,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
     },
     # news_data
     "get_news": {
+        "akshare": get_akshare_news,
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
     },
@@ -149,6 +156,7 @@ VENDOR_METHODS = {
     # macro_data
     "get_macro_indicators": {
         "fred": get_fred_macro_data,
+        "akshare": get_akshare_macro_data,
     },
     # prediction_markets
     "get_prediction_markets": {
@@ -206,12 +214,26 @@ def route_to_vendor(method: str, *args, **kwargs):
         vendor_chain = all_available_vendors
 
     # Keep the existing yfinance default for global symbols, but route explicit
-    # Shanghai/Shenzhen A-share symbols to AKShare before Yahoo sees them.
+    # Shanghai/Shenzhen A-share symbols to AKShare before Yahoo sees them
+    # (.SS is Yahoo's Shanghai suffix, .SH the broker/AKShare one - both are
+    # A-shares yfinance cannot serve; see symbol_utils). The rule covers every
+    # category where akshare has an implementation and yfinance has no A-share
+    # coverage: prices, indicators, fundamentals, and per-stock news.
+    # ETFs are excluded from the fundamentals rule: they have no financial
+    # statements, and AKShare's stock-statement endpoints then crash inside
+    # East Money's F10 page parser (TypeError on a missing hidctype element)
+    # instead of degrading to a clear no-data verdict.
     if (
-        category in {"core_stock_apis", "technical_indicators"}
+        category in {
+            "core_stock_apis",
+            "technical_indicators",
+            "fundamental_data",
+            "news_data",
+        }
         and vendor_config.strip().lower() == "yfinance"
         and args
-        and _is_a_share_symbol(args[0])
+        and is_a_share_symbol(args[0])
+        and not (category == "fundamental_data" and is_china_etf_symbol(args[0]))
     ):
         vendor_chain = ["akshare"]
 

@@ -141,3 +141,101 @@ def normalize_symbol(raw: str) -> str:
 def is_yahoo_safe(symbol: str) -> bool:
     """True when ``symbol`` only contains characters Yahoo symbols use."""
     return bool(symbol) and _YAHOO_SAFE.fullmatch(symbol) is not None
+
+
+# --- A-share (Chinese mainland) symbol knowledge ---------------------------
+#
+# Single source of truth for recognizing A-share symbols and mapping them
+# between the two suffix conventions in play:
+#
+#   form        used by
+#   ----------  ---------------------------------------------
+#   600519.SH   broker/AKShare style (akshare accepts it)
+#   600519.SS   Yahoo Finance style (reflection layer prices it)
+#   600519.SZ   both (Shenzhen uses .SZ on Yahoo too)
+#
+# Before this consolidation, three call sites carried three different copies
+# of the rule (interface.py and stockstats_utils.py recognized only
+# .SH/.SZ; akshare.py's normalizer accepted .SH/.SS/.SZ; benchmark_map keyed
+# only .SS/.SZ), so a README-style .SS symbol silently routed to yfinance
+# (which has no data for it) while .SH symbols broke the reflection layer.
+
+_A_SHARE_SUFFIXES = (".SH", ".SS", ".SZ")
+
+
+def is_a_share_symbol(raw) -> bool:
+    """True for explicit Shanghai/Shenzhen A-share ticker forms (``600519.SH``,
+    ``600519.SS``, ``000001.SZ``). Purely syntactic; case-insensitive.
+    Bare 6-digit codes are intentionally NOT matched here - they are ambiguous
+    with other vendors' numeric symbols and only the akshare vendor itself
+    treats them as A-shares (see ``a_share_code``).
+    """
+    if not isinstance(raw, str):
+        return False
+    value = raw.strip().upper()
+    return len(value) == 9 and value[:6].isdigit() and value.endswith(_A_SHARE_SUFFIXES)
+
+
+def a_share_code(raw) -> str | None:
+    """Return the bare six-digit A-share code (``600519``) for an A-share
+    symbol in any accepted form, or None for anything else. The akshare
+    vendor queries East Money with this bare code.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().upper()
+    for suffix in _A_SHARE_SUFFIXES:
+        if value.endswith(suffix):
+            candidate = value[: -len(suffix)]
+            if len(candidate) == 6 and candidate.isdigit():
+                return candidate
+            return None
+    # Bare six-digit code: valid only for the akshare vendor's explicit use.
+    if len(value) == 6 and value.isdigit():
+        return value
+    return None
+
+
+def a_share_yahoo_symbol(raw) -> str | None:
+    """Map an A-share symbol to Yahoo Finance's convention for the reflection
+    layer's realized-return lookup: ``.SH`` -> ``.SS`` (Yahoo's Shanghai
+    suffix), ``.SS``/``.SZ`` unchanged. Returns None for non-A-share input.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().upper()
+    if not is_a_share_symbol(value):
+        return None
+    code = value[:6]
+    if value.endswith(".SH"):
+        return f"{code}.SS"
+    return value
+
+
+# --- China ETF symbol knowledge ---------------------------------------------
+#
+# Chinese exchange-traded funds use the same 6-digit+.SH/.SZ form as A-shares
+# but disjoint code ranges, and need different AKShare endpoints:
+#
+#   range       exchange   examples
+#   ----------  ---------  ---------------------
+#   51x/52x/56x/58x  Shanghai  510300 (沪深300ETF), 588000 (科创50ETF)
+#   15x/16x     Shenzhen   159915 (创业板ETF)
+#
+# Code ranges do NOT overlap A-share ranges (SH stocks 60x/68x, SZ stocks
+# 00x/30x), so classification by prefix is unambiguous.
+
+_ETF_SHANGHAI_PREFIXES = ("51", "52", "56", "58")
+_ETF_SHENZHEN_PREFIXES = ("15", "16")
+
+
+def is_china_etf_symbol(raw) -> bool:
+    """True for Shanghai/Shenzhen exchange-traded fund tickers
+    (``510300.SH``, ``159915.SZ``). Purely syntactic; case-insensitive."""
+    if not isinstance(raw, str):
+        return False
+    value = raw.strip().upper()
+    if not is_a_share_symbol(value):
+        return False
+    code = value[:6]
+    return code.startswith(_ETF_SHANGHAI_PREFIXES + _ETF_SHENZHEN_PREFIXES)

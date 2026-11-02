@@ -11,7 +11,7 @@ from tradingagents.llm_clients.model_catalog import get_model_options
 
 console = Console()
 
-TICKER_INPUT_EXAMPLES = "SPY, 0700.HK, BTC-USD"
+TICKER_INPUT_EXAMPLES = "SPY, 0700.HK, 600519.SH, 510300.SH, BTC-USD"
 
 ANALYST_ORDER = [
     ("Market Analyst", AnalystType.MARKET),
@@ -285,8 +285,25 @@ def select_openrouter_model(mode: str) -> str:
 
 
 def _prompt_custom_model_id() -> str:
-    """Prompt user to type a custom model ID."""
-    return _require_text("Enter model ID:", "Please enter a model ID.")
+    """Prompt user to type a custom model ID.
+
+    Rejects values that are questionary help/escape artifacts (`?`, `help`)
+    or contain whitespace - these pass the non-empty check but then fail at
+    the provider with an opaque 400 mid-run, after the interactive setup is
+    already complete (a `?` typed here once surfaced as DeepSeek's "supported
+    model names are ..., but you passed ?." after five minutes of setup).
+    """
+    while True:
+        model_id = _require_text("Enter model ID:", "Please enter a model ID.")
+        lowered = model_id.lower()
+        if lowered in {"?", "help", "list"} or any(ch.isspace() for ch in model_id):
+            console.print(
+                "[yellow]That doesn't look like a model ID "
+                "(help artifact or contains whitespace). Enter the exact model "
+                "name your provider serves, e.g. deepseek-v4-flash.[/yellow]"
+            )
+            continue
+        return model_id
 
 
 def _select_model(provider: str, mode: str) -> str:

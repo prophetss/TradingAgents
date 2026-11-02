@@ -5,7 +5,58 @@ All notable changes to TradingAgents are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
+## [Unreleased] - AKShare full A-share support
 
+### Added
+- **China ETF support via AKShare.** ETF symbols such as `510300.SH`,
+  `588000.SH`, and `159915.SZ` now receive daily OHLCV data and the existing
+  technical indicators through automatic AKShare routing. ETF history tries
+  East Money first and falls back to Sina; ETF-specific fund NAV, holdings,
+  creation/redemption, and fund fundamentals remain outside the current
+  scope.
+- **China macro indicators via AKShare.** The ``macro_data`` category now
+  defaults to a ``fred,akshare`` chain: FRED serves US/global series when
+  ``FRED_API_KEY`` is set, and AKShare supplies China-specific indicators
+  (CPI MoM/YoY, PPI, LPR 1Y/5Y, GDP YoY, M2/M1 YoY, manufacturing PMI) as
+  fallback - keyless, via East Money/统计局 endpoints. Both report in the same
+  markdown shape so the news analyst needs no per-vendor handling.
+- **Network resilience for AKShare fetches.** All East Money calls retry
+  transient connection drops (3 attempts, 2s backoff), and the OHLCV fetch
+  falls back to the Sina daily endpoint (`stock_zh_a_daily`, different
+  provider/CDN) when East Money's history host is unreachable - observed in
+  the wild where push2his went fully dark while other East Money hosts
+  stayed up. A mid-analysis tool call now degrades gracefully instead of
+  crashing the run.
+- **A-share fundamentals via AKShare.** The four fundamental tools
+  (`get_fundamentals`, `get_balance_sheet`, `get_cashflow`,
+  `get_income_statement`) are served by East Money statement endpoints for
+  `.SH`/`.SS`/`.SZ` symbols, with report periods filtered by disclosure date
+  so historical runs never see unpublished reports. Values are CNY. Verified
+  live against Kweichow Moutai's H1-2026 statements.
+- **A-share per-stock news via AKShare.** `get_news` serves the East Money
+  feed for A-share symbols with look-ahead-safe window filtering, capped at
+  `news_article_limit`.
+- **Auto-routing extended to fundamentals and news.** The existing
+  "yfinance default + A-share suffix -> akshare" rule now covers
+  `fundamental_data` and `news_data` (Yahoo has no A-share coverage there;
+  previously all four tools returned `NO_DATA_AVAILABLE` for every A-share
+  run).
+
+### Fixed
+- **`close_200_sma` never returned data on the akshare path.** The fetch
+  window was sized in calendar days (`+30`), covering only ~152 trading days
+  - short of the 200 rows `rolling(200)` needs. Windows are now sized against
+  a trading-day conversion (~242/365) per-indicator warm-up table, so slow
+  indicators return data while short ones don't over-fetch.
+- **`.SH` reflection entries stayed pending forever.** The realized-return
+  lookup priced `.SH` symbols on Yahoo, which only knows `.SS`; A-share
+  tickers now resolve to their Yahoo form first.
+- **`.SH` benchmark fell through to SPY.** `benchmark_map` gained a `.SH`
+  entry (SSE Composite), matching `.SS`.
+- **`.SS` symbols silently routed to yfinance.** Three inconsistent copies of
+  the A-share detection rule existed; detection/normalization now lives in
+  `symbol_utils.py` (`is_a_share_symbol` / `a_share_code` /
+  `a_share_yahoo_symbol`) and every call site delegates to it.
 ## [0.3.1] — 2026-07-05
 
 Correctness and stability patch: data look-ahead, graph-router crash-safety,

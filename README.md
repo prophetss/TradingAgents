@@ -153,9 +153,9 @@ export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
 
 ### AKShare data source (optional)
 
-This fork routes Chinese A-share daily prices and technical indicators through
-AKShare, while other symbols continue to use Yahoo Finance. Install AKShare
-support with:
+This fork routes Chinese A-share and China-listed ETF daily prices and
+technical indicators through AKShare, while other symbols continue to use
+Yahoo Finance. Install AKShare support with:
 
 ```bash
 pip install ".[akshare]"
@@ -170,10 +170,35 @@ config["data_vendors"] = {
 }
 ```
 
-Symbols ending in `.SH` or `.SZ` are recognized as A-shares, for example
+Symbols ending in `.SH`, `.SS`, or `.SZ` are recognized as Chinese securities,
+including ETFs such as `510300.SH` and `159915.SZ`; regular A-shares include
 `600000.SH` and `000001.SZ`. Six-digit symbols without an exchange suffix can
 still be selected explicitly with the `akshare` vendor. To use an ordered
 fallback, configure `yfinance,akshare`.
+
+Chinese ETFs currently provide daily OHLCV data and the existing technical
+indicators. Their AKShare history adapter tries East Money first and falls
+back to Sina when the East Money history service is unavailable. ETF-specific
+fund NAV, holdings, creation/redemption, and other fund fundamentals are not
+yet included.
+
+**A-share fundamentals and news** are also served by AKShare (East Money
+statements and per-stock news). They auto-route the same way: when a category's
+vendor is the `yfinance` default and the symbol carries a `.SH`/`.SS`/`.SZ`
+suffix, AKShare serves the call, because Yahoo Finance has no A-share coverage
+for these endpoints. Values are CNY; report periods are filtered by disclosure
+date so historical runs never see reports that had not been published yet.
+
+```python
+config["data_vendors"] = {
+    "fundamental_data": "akshare",   # East Money 三表 + overview
+    "news_data": "akshare",          # East Money per-stock news
+}
+```
+
+The reflection layer resolves `.SH` tickers to Yahoo's `.SS` form for
+realized-return lookups, and the alpha benchmark for both Shanghai suffixes is
+`000001.SS` (SSE Composite).
 
 For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials.
 
