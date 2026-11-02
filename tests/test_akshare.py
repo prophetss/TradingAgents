@@ -6,15 +6,15 @@ from unittest import mock
 import pandas as pd
 import pytest
 
-import tradingagents.dataflows.stockstats_utils as stockstats_utils
-from tradingagents.dataflows import akshare
 from tradingagents.dataflows.config import set_config
-from tradingagents.dataflows.interface import route_to_vendor
-from tradingagents.dataflows.symbol_utils import (
+from tradingagents.dataflows.router import route_to_vendor
+from tradingagents.dataflows.symbols import (
     a_share_code,
     a_share_yahoo_symbol,
     is_a_share_symbol,
 )
+from tradingagents.dataflows.vendors import akshare
+from tradingagents.dataflows.vendors.yahoo import ohlcv as stockstats_utils
 
 
 def _history_frame():
@@ -70,7 +70,7 @@ def test_sh_suffix_automatically_routes_to_akshare(fake_akshare):
     set_config({"data_vendors": {"core_stock_apis": "yfinance"}})
 
     with mock.patch.dict(
-        __import__("tradingagents.dataflows.interface", fromlist=["VENDOR_METHODS"]).VENDOR_METHODS,
+        __import__("tradingagents.dataflows.router", fromlist=["VENDOR_METHODS"]).VENDOR_METHODS,
         {"get_stock_data": {"akshare": akshare.get_stock, "yfinance": lambda *args: "YFINANCE_DATA"}},
         clear=False,
     ):
@@ -84,7 +84,7 @@ def test_sz_suffix_automatically_routes_to_akshare(fake_akshare):
     set_config({"data_vendors": {"technical_indicators": "yfinance"}})
 
     with mock.patch.dict(
-        __import__("tradingagents.dataflows.interface", fromlist=["VENDOR_METHODS"]).VENDOR_METHODS,
+        __import__("tradingagents.dataflows.router", fromlist=["VENDOR_METHODS"]).VENDOR_METHODS,
         {
             "get_indicators": {
                 "akshare": akshare.get_indicator,
@@ -103,7 +103,7 @@ def test_sz_suffix_automatically_routes_to_akshare(fake_akshare):
 @pytest.mark.unit
 def test_non_a_share_automatically_uses_yfinance(monkeypatch):
     set_config({"data_vendors": {"core_stock_apis": "yfinance"}})
-    import tradingagents.dataflows.interface as interface
+    import tradingagents.dataflows.router as interface
     monkeypatch.setitem(interface.VENDOR_METHODS["get_stock_data"], "yfinance", lambda *args: "YFINANCE_DATA")
 
     result = route_to_vendor("get_stock_data", "AAPL", "2026-01-01", "2026-01-10")
@@ -197,7 +197,7 @@ def test_ss_suffix_routes_to_akshare_for_ohlcv(fake_akshare):
     set_config({"data_vendors": {"core_stock_apis": "yfinance"}})
 
     with mock.patch.dict(
-        __import__("tradingagents.dataflows.interface", fromlist=["VENDOR_METHODS"]).VENDOR_METHODS,
+        __import__("tradingagents.dataflows.router", fromlist=["VENDOR_METHODS"]).VENDOR_METHODS,
         {"get_stock_data": {"akshare": akshare.get_stock, "yfinance": lambda *args: "YFINANCE_DATA"}},
         clear=False,
     ):
@@ -217,30 +217,29 @@ def test_benchmark_map_covers_broker_sh_suffix():
 
 @pytest.mark.unit
 def test_fetch_returns_resolves_sh_to_yahoo_ss(monkeypatch):
-    """Regression: _fetch_returns priced .SH symbols on Yahoo, which doesn't
-    know that suffix - the memory-log entry then stayed pending forever."""
-    from tradingagents.graph.trading_graph import TradingAgentsGraph
+    """Regression: A-share realized returns were priced with the broker ``.SH``
+    suffix, which Yahoo does not know - the memory-log entry then stayed pending
+    forever. The reflection layer's price lookup now normalizes to ``.SS``."""
+    from tradingagents.dataflows.vendors.yahoo import market
 
-    calls = {}
+    calls = []
 
     class _FakeTicker:
         def __init__(self, symbol):
-            calls.setdefault("symbols", []).append(symbol)
+            calls.append(symbol)
 
         def history(self, start, end):
-            calls["history"] = True
             return pd.DataFrame(
                 {"Close": [100.0, 110.0]},
                 index=pd.to_datetime(["2026-01-15", "2026-01-20"]),
             )
 
-    monkeypatch.setattr("tradingagents.graph.trading_graph.yf.Ticker", _FakeTicker)
+    monkeypatch.setattr(market.yf, "Ticker", _FakeTicker)
 
-    graph = TradingAgentsGraph.__new__(TradingAgentsGraph)  # no LLM init needed
-    raw, alpha, days = graph._fetch_returns("600519.SH", "2026-01-15", benchmark="000001.SS")
+    closes = market.get_closes("600519.SH", "2026-01-15", "2026-01-20")
 
-    assert calls["symbols"][0] == "600519.SS"  # resolved, not the raw .SH
-    assert raw is not None and days is not None
+    assert calls[0] == "600519.SS"  # resolved, not the raw .SH
+    assert closes.tolist() == [100.0, 110.0]
 
 
 # --- ohlcv-fix --------------------------------------------------------------
@@ -421,7 +420,7 @@ def test_a_share_fundamentals_auto_route(fake_akshare_statements):
 @pytest.mark.unit
 def test_non_a_share_fundamentals_never_route_to_akshare(fake_akshare_statements, monkeypatch):
     set_config({"data_vendors": {"fundamental_data": "yfinance"}})
-    import tradingagents.dataflows.interface as interface
+    import tradingagents.dataflows.router as interface
 
     monkeypatch.setattr(
         akshare, "get_fundamentals",
@@ -433,7 +432,7 @@ def test_non_a_share_fundamentals_never_route_to_akshare(fake_akshare_statements
         akshare.get_fundamentals,
     )
 
-    with mock.patch("tradingagents.dataflows.y_finance.get_fundamentals") as fake_yf:
+    with mock.patch("tradingagents.dataflows.vendors.yahoo.fundamentals.get_fundamentals") as fake_yf:
         fake_yf.return_value = "YFINANCE_FUNDAMENTALS"
         # yfinance raises through the router's generic-exception path; patch at
         # the VENDOR_METHODS layer instead for isolation.
@@ -642,7 +641,7 @@ def test_sina_fallback_when_eastmoney_dark(monkeypatch):
     ],
 )
 def test_is_china_etf_symbol(symbol, expected):
-    from tradingagents.dataflows.symbol_utils import is_china_etf_symbol
+    from tradingagents.dataflows.symbols import is_china_etf_symbol
 
     assert is_china_etf_symbol(symbol) is expected
 
@@ -732,7 +731,7 @@ def test_etf_fundamentals_do_not_route_to_akshare(fake_akshare_statements, monke
     analysis run - fundamentals for ETFs must stay on the configured vendor
     (yfinance), which degrades to a clean NO_DATA verdict."""
     set_config({"data_vendors": {"fundamental_data": "yfinance"}})
-    import tradingagents.dataflows.interface as interface
+    import tradingagents.dataflows.router as interface
 
     monkeypatch.setattr(
         akshare,
@@ -798,7 +797,7 @@ def fake_akshare_macro(monkeypatch):
 
 @pytest.mark.unit
 def test_macro_cpi_report_shape(fake_akshare_macro):
-    from tradingagents.dataflows.akshare_macro import get_macro_data
+    from tradingagents.dataflows.vendors.akshare_macro import get_macro_data
 
     result = get_macro_data("cpi", "2026-08-24")
 
@@ -809,7 +808,7 @@ def test_macro_cpi_report_shape(fake_akshare_macro):
 
 @pytest.mark.unit
 def test_macro_lpr_uses_trade_date_column(fake_akshare_macro):
-    from tradingagents.dataflows.akshare_macro import get_macro_data
+    from tradingagents.dataflows.vendors.akshare_macro import get_macro_data
 
     result = get_macro_data("lpr", "2026-08-24")
 
@@ -819,7 +818,7 @@ def test_macro_lpr_uses_trade_date_column(fake_akshare_macro):
 
 @pytest.mark.unit
 def test_macro_unknown_indicator_returns_guidance(fake_akshare_macro):
-    from tradingagents.dataflows.akshare_macro import get_macro_data
+    from tradingagents.dataflows.vendors.akshare_macro import get_macro_data
 
     result = get_macro_data("bank of japan rate", "2026-08-24")
 
@@ -830,7 +829,7 @@ def test_macro_unknown_indicator_returns_guidance(fake_akshare_macro):
 @pytest.mark.unit
 def test_macro_lookahead_window_filter(fake_akshare_macro):
     """Rows after curr_date must never appear (backtest fidelity)."""
-    from tradingagents.dataflows.akshare_macro import get_macro_data
+    from tradingagents.dataflows.vendors.akshare_macro import get_macro_data
 
     result = get_macro_data("cpi", "2026-05-15")  # frame runs to 2026-08
 
@@ -843,8 +842,8 @@ def test_macro_fallback_chain_fred_first(fake_akshare_macro, monkeypatch):
     indicators ride the same chain as the configured fallback."""
     set_config({"data_vendors": {"macro_data": "fred,akshare"}})
 
-    import tradingagents.dataflows.fred as fred_mod
-    import tradingagents.dataflows.interface as interface
+    import tradingagents.dataflows.router as interface
+    import tradingagents.dataflows.vendors.fred as fred_mod
 
     # FRED raises not-configured -> router falls to akshare for a China alias.
     def _not_configured(*args, **kwargs):

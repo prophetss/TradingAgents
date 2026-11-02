@@ -190,7 +190,7 @@ config["data_vendors"] = {
 | 宏观数据 / 情绪（Reddit/StockTwits） | ✅ 宏观：FRED 优先（需 Key）+ AKShare 中国宏观（CPI/LPR/M2/GDP/PMI）回退；情绪仍走原路径 |
 | ETF 专属净值、持仓、规模、申赎和公告 | ❌ 尚未接入 |
 
-**自动路由规则**：当某类别的 vendor 是默认的 `yfinance` 且符号带 `.SH`/`.SS`/`.SZ` 后缀时，行情、指标、基本面、新闻四类自动改走 akshare（因 yfinance 对 A 股无数据）。显式配置多 vendor 链（如 `yfinance,alpha_vantage`）时保持配置语义不变。
+**自动路由规则**：当某类别的 vendor 链中没有 `akshare`，且符号带 `.SH`/`.SS`/`.SZ` 后缀时，行情、指标、基本面、新闻四类自动改走 akshare（因 Yahoo/Alpha Vantage 对 A 股无数据）；链中已显式包含 `akshare` 时按配置顺序执行。
 
 ### 5.4 代码识别规则
 
@@ -208,7 +208,7 @@ config["data_vendors"] = {
 |---|---|---|
 | `core_stock_apis` | yfinance | akshare / alpha_vantage / yfinance |
 | `technical_indicators` | yfinance | akshare / alpha_vantage / yfinance |
-| `fundamental_data` | yfinance | akshare（A股）/ alpha_vantage / yfinance |
+| `fundamental_data` | sec_edgar,yfinance | sec_edgar / akshare（A股）/ alpha_vantage / yfinance |
 | `news_data` | yfinance | akshare（A股）/ alpha_vantage / yfinance |
 | `macro_data` | fred,akshare | fred（需 `FRED_API_KEY`）/ akshare（中国宏观，免 Key） |
 | `prediction_markets` | polymarket | polymarket（免 Key） |
@@ -517,7 +517,7 @@ tradingagents/
 ├── default_config.py    # 全部默认配置 + 环境变量覆盖机制
 ├── reporting.py         # 报告树写出（CLI 与 API 共用）
 ├── agents/              # 各 Agent 提示词与实现
-├── dataflows/           # 数据源接入（y_finance / akshare / alpha_vantage / fred / polymarket / reddit / stocktwits ...）
+├── dataflows/           # 数据源路由 router.py + vendors/（yahoo / akshare / alpha_vantage / sec_edgar / fred / polymarket / reddit / stocktwits）
 ├── graph/               # LangGraph 编排（trading_graph.py 为主入口）
 └── llm_clients/         # 各 LLM 提供商客户端
 cli/                     # Typer 交互式命令行
