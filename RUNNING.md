@@ -217,6 +217,21 @@ config["data_vendors"] = {
 
 > Reddit / StockTwits 情绪数据由情绪分析师直接拉取，不走共享路由。
 
+### 5.6 缓存、限流与代理
+
+- **同一次运行只拉一遍行情**：验证快照、技术指标、`get_stock_data` 共用 `data_cache_dir` 下按标的缓存的日线文件（每天一个文件，覆盖最近 5 年），因此一次分析通常只向数据源请求一次；指标与快照都用 stockstats 计算，数值一致。
+- **成交量统一为“股”**：东财 `成交量` 单位是「手」，适配器会 ×100 转成股；新浪/雅虎本身就是股。这样 VWMA、量比等指标和快照口径一致。
+- **东财 push2 限流不重试**：命中限流会立刻切到新浪源，而不是 3 次重试（官方提示重试会延长封禁）。
+- **代理**（AKShare 的请求单独走代理，不影响 LLM 等其他客户端）：
+
+```bash
+export TRADINGAGENTS_AKSHARE_PROXY=http://127.0.0.1:7890
+# SOCKS5 需先安装：pip install "requests[socks]"
+export TRADINGAGENTS_AKSHARE_PROXY=socks5h://127.0.0.1:1080
+```
+
+  akshare ≥ 1.20 通过 `ak.set_proxies()` 生效；更老版本会忽略该变量，可改用 `HTTP_PROXY`/`HTTPS_PROXY`。
+
 ---
 
 ## 6. 运行方式一：交互式 CLI（推荐）

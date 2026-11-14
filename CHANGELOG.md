@@ -15,19 +15,26 @@ Breaking changes within the 0.x line are called out explicitly.
   East Money first and falls back to Sina; ETF-specific fund NAV, holdings,
   creation/redemption, and fund fundamentals remain outside the current
   scope.
-- **China macro indicators via AKShare.** The ``macro_data`` category now
-  defaults to a ``fred,akshare`` chain: FRED serves US/global series when
-  ``FRED_API_KEY`` is set, and AKShare supplies China-specific indicators
+- **China macro indicators via AKShare.** The `macro_data` category now
+  defaults to a `fred,akshare` chain: FRED serves US/global series when
+  `FRED_API_KEY` is set, and AKShare supplies China-specific indicators
   (CPI MoM/YoY, PPI, LPR 1Y/5Y, GDP YoY, M2/M1 YoY, manufacturing PMI) as
   fallback - keyless, via East Money/统计局 endpoints. Both report in the same
   markdown shape so the news analyst needs no per-vendor handling.
-- **Network resilience for AKShare fetches.** All East Money calls retry
-  transient connection drops (3 attempts, 2s backoff), and the OHLCV fetch
-  falls back to the Sina daily endpoint (`stock_zh_a_daily`, different
-  provider/CDN) when East Money's history host is unreachable - observed in
-  the wild where push2his went fully dark while other East Money hosts
-  stayed up. A mid-analysis tool call now degrades gracefully instead of
-  crashing the run.
+- **AKShare proxy support.** `TRADINGAGENTS_AKSHARE_PROXY` routes the vendor's
+  own requests through an HTTP(S)/SOCKS proxy via `ak.set_proxies()`, kept
+  apart from the process-wide `HTTP_PROXY`/`HTTPS_PROXY`. Requires akshare
+  1.20.22 or later; older builds ignore the setting and can still use the
+  standard environment variables.
+- **One OHLCV download per run.** The verification snapshot, the technical
+  indicators and the stock-history tool share the per-symbol daily cache, so a
+  symbol is fetched once instead of once per indicator. The cache's five-year
+  window supplies the warm-up rows slow indicators need.
+- **Network resilience for AKShare fetches.** Transient connection drops are
+  retried (3 attempts, 2s backoff), and the OHLCV fetch falls back to the Sina
+  daily endpoint (`stock_zh_a_daily`, different provider/CDN) when East
+  Money's history host is unreachable or rate limited - observed in the wild
+  where push2his went fully dark while other East Money hosts stayed up.
 - **A-share fundamentals via AKShare.** The four fundamental tools
   (`get_fundamentals`, `get_balance_sheet`, `get_cashflow`,
   `get_income_statement`) are served by East Money statement endpoints for
@@ -37,18 +44,30 @@ Breaking changes within the 0.x line are called out explicitly.
 - **A-share per-stock news via AKShare.** `get_news` serves the East Money
   feed for A-share symbols with look-ahead-safe window filtering, capped at
   `news_article_limit`.
-- **Auto-routing extended to fundamentals and news.** The existing
-  "yfinance default + A-share suffix -> akshare" rule now covers
+- **Auto-routing extended to fundamentals and news.** The "configured chain
+  has no akshare + A-share suffix -> akshare" rule covers
   `fundamental_data` and `news_data` (Yahoo has no A-share coverage there;
   previously all four tools returned `NO_DATA_AVAILABLE` for every A-share
   run).
 
 ### Fixed
+- **AKShare volume units differed by source.** East Money reports `成交量` in
+  手 while Sina and Yahoo report shares, so a Sina fallback left volume-based
+  indicators (VWMA, volume ratios) off by 100x; East Money volumes are now
+  converted to shares.
+- **A push2 rate limit was retried three times.** `Push2RateLimitError`
+  subclasses requests' connection error and was retried by the ladder, which
+  the vendor says extends the ban; it now falls through to the Sina source on
+  the first hit.
+- **Indicators disagreed with the verification snapshot.** `get_indicators`
+  computed RSI/ATR with hand-rolled formulas while the snapshot used
+  stockstats, so the two tools reported different values for the same bar
+  (RSI by ~2 points, ATR by ~10%). Both now use stockstats on the shared
+  history.
 - **`close_200_sma` never returned data on the akshare path.** The fetch
   window was sized in calendar days (`+30`), covering only ~152 trading days
-  - short of the 200 rows `rolling(200)` needs. Windows are now sized against
-  a trading-day conversion (~242/365) per-indicator warm-up table, so slow
-  indicators return data while short ones don't over-fetch.
+  - short of the 200 rows `rolling(200)` needs. Indicators now read the
+  five-year shared cache, so slow indicators return data.
 - **`.SH` reflection entries stayed pending forever.** The realized-return
   lookup priced `.SH` symbols on Yahoo, which only knows `.SS`; A-share
   tickers now resolve to their Yahoo form first.

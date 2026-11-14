@@ -1,4 +1,3 @@
-import math
 from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
@@ -30,6 +29,12 @@ def _history_frame():
             "成交额": range(10000, 10240),
         }
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_cache(tmp_path, _isolate_config):
+    """Keep each test's OHLCV cache to itself: the vendor now shares it."""
+    set_config({"data_cache_dir": str(tmp_path)})
 
 
 @pytest.fixture()
@@ -246,19 +251,19 @@ def test_fetch_returns_resolves_sh_to_yahoo_ss(monkeypatch):
 
 
 @pytest.mark.unit
-def test_close_200_sma_window_covers_trading_warmup(fake_akshare, monkeypatch):
+def test_close_200_sma_works_from_the_shared_history(monkeypatch):
     """Regression: the old calendar-day window (max(lookback, 200) + 30 days)
     contained only ~152 A-share trading days, so rolling(200) produced all-NaN
-    and close_200_sma raised NoMarketDataError for every normal lookback."""
+    and close_200_sma raised NoMarketDataError for every normal lookback. The
+    indicator now reads the 5-year daily cache, which is ample warm-up."""
     requested = []
 
     def fake_fetch(symbol, start_date, end_date):
         requested.append((start_date, end_date))
         # Simulate real trading-day density: ~242 rows per 365 days.
         days = pd.date_range(start_date, end_date, freq="D")
-        trading_days = days[days.dayofweek < 5]  # weekdays as density proxy
-        n = min(len(trading_days), 400)
-        idx = trading_days[-n:]
+        idx = days[days.dayofweek < 5]  # weekdays as density proxy
+        n = len(idx)
         return pd.DataFrame(
             {
                 "Open": range(100, 100 + n),
@@ -274,21 +279,24 @@ def test_close_200_sma_window_covers_trading_warmup(fake_akshare, monkeypatch):
 
     result = akshare.get_indicator("600519.SH", "close_200_sma", "2026-01-10", 30)
 
-    # Window requested must span enough calendar days for 200 trading rows.
+    # The cache spans five years, comfortably more than the 200 trading rows
+    # the indicator needs.
     start_str, _ = requested[0]
     span_days = (datetime.strptime("2026-01-10", "%Y-%m-%d") - datetime.strptime(start_str, "%Y-%m-%d")).days
-    assert span_days >= math.ceil((200 + 30 + 10) * 365 / 242) - 1
+    assert span_days >= 365 * 4
     # And the indicator actually returns rows instead of raising.
     assert "200 SMA" in result
     assert result.count("\n") >= 2  # header + at least one data row
 
 
 @pytest.mark.unit
-def test_short_lookback_does_not_overfetch(fake_akshare, monkeypatch):
-    requested = []
+def test_indicators_share_one_fetch(monkeypatch):
+    """The snapshot, every indicator and the stock tool read one per-symbol
+    cache, so a run asks East Money for the history once, not per indicator."""
+    calls = []
 
     def fake_fetch(symbol, start_date, end_date):
-        requested.append((start_date, end_date))
+        calls.append(symbol)
         days = pd.date_range(start_date, end_date, freq="D")
         idx = days[days.dayofweek < 5]
         n = len(idx)
@@ -306,12 +314,10 @@ def test_short_lookback_does_not_overfetch(fake_akshare, monkeypatch):
     monkeypatch.setattr(akshare, "_fetch_history", fake_fetch)
 
     akshare.get_indicator("600519.SH", "macd", "2026-01-10", 10)
+    akshare.get_indicator("600519.SH", "boll", "2026-01-10", 10)
+    akshare.get_stock("600519.SH", "2026-01-01", "2026-01-10")
 
-    start_str, _ = requested[0]
-    span_days = (datetime.strptime("2026-01-10", "%Y-%m-%d") - datetime.strptime(start_str, "%Y-%m-%d")).days
-    # macd needs only ~35 warm-up rows: the window stays bounded well below
-    # the close_200_sma fetch (no 5-year over-fetch for short indicators).
-    assert span_days <= 120
+    assert len(calls) == 1
 
 
 # --- akshare-fundamentals ----------------------------------------------------
@@ -620,6 +626,121 @@ def test_sina_fallback_when_eastmoney_dark(monkeypatch):
     assert em_calls["n"] == akshare._FETCH_RETRIES  # retried, then fell back
     assert "# Stock data for 600519" in result
     assert "Date,Open,Close,High,Low,Volume" in result  # normalized columns
+
+
+@pytest.mark.unit
+def test_east_money_volume_is_reported_in_shares(monkeypatch):
+    """East Money's 成交量 is in 手 (lots of 100); the tool reports shares like
+    Sina and Yahoo, so volume-based indicators are comparable either way."""
+    frame = pd.DataFrame(
+        {
+            "日期": ["2026-01-01", "2026-01-02"],
+            "开盘": [100, 101],
+            "收盘": [101, 102],
+            "最高": [102, 103],
+            "最低": [99, 100],
+            "成交量": [1000, 1100],  # 手
+        }
+    )
+    fake = SimpleNamespace(stock_zh_a_hist=lambda **kwargs: frame)
+    monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
+
+    result = akshare.get_stock("600519.SH", "2026-01-01", "2026-01-02")
+
+    assert "100000" in result   # 1000 手 -> 100,000 shares
+    assert "110000" in result
+
+
+@pytest.mark.unit
+def test_sina_volume_stays_in_shares(monkeypatch):
+    """The Sina fallback already reports shares and must not be scaled."""
+    def dark_hist(**kwargs):
+        raise ConnectionError("down")
+
+    def sina_history(**kwargs):
+        return pd.DataFrame(
+            {
+                "date": ["2026-01-01", "2026-01-02"],
+                "open": [100, 101],
+                "high": [102, 103],
+                "low": [99, 100],
+                "close": [101, 102],
+                "volume": [4177984, 4200000],
+            }
+        )
+
+    fake = SimpleNamespace(stock_zh_a_hist=dark_hist, stock_zh_a_daily=sina_history)
+    monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
+    monkeypatch.setattr(akshare.time, "sleep", lambda *_: None)
+
+    result = akshare.get_stock("600519.SH", "2026-01-01", "2026-01-02")
+
+    assert "4177984" in result
+    assert not any(line.endswith("410000000") for line in result.splitlines())
+
+
+@pytest.mark.unit
+def test_rate_limit_is_not_retried(monkeypatch):
+    """A ban is the vendor asking us to stop: retrying extends it. It must fall
+    through to Sina after one attempt, not hammer East Money three times."""
+    import requests as _requests
+
+    class Push2RateLimitError(_requests.exceptions.ConnectionError):
+        pass
+
+    calls = {"em": 0, "sina": 0}
+
+    def limited(**kwargs):
+        calls["em"] += 1
+        raise Push2RateLimitError("push2 rate limited")
+
+    def sina_history(**kwargs):
+        calls["sina"] += 1
+        return _sina_frame()
+
+    fake = SimpleNamespace(stock_zh_a_hist=limited, stock_zh_a_daily=sina_history)
+    monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
+    monkeypatch.setattr(akshare.time, "sleep", lambda *_: None)
+
+    result = akshare.get_stock("600519.SH", "2026-01-01", "2026-01-10")
+
+    assert calls["em"] == 1           # no retry ladder on a rate limit
+    assert calls["sina"] == 1         # fell back once
+    assert "# Stock data for 600519" in result
+
+
+# --- proxy support ------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_proxy_from_env_is_applied_to_akshare(monkeypatch):
+    """TRADINGAGENTS_AKSHARE_PROXY points akshare's own requests at a proxy
+    without touching the process-wide HTTP_PROXY used by other clients."""
+    applied = []
+
+    fake = SimpleNamespace(set_proxies=lambda proxies: applied.append(proxies))
+    monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
+    monkeypatch.setenv(akshare.PROXY_ENV, "socks5h://127.0.0.1:1080")
+    monkeypatch.setattr(akshare, "_PROXY_APPLIED", None)
+
+    assert akshare._akshare_module() is fake
+    assert applied == [{"http": "socks5h://127.0.0.1:1080", "https": "socks5h://127.0.0.1:1080"}]
+
+    # Applying it again on every call would be pointless work.
+    akshare._akshare_module()
+    assert len(applied) == 1
+
+
+@pytest.mark.unit
+def test_proxy_setting_is_ignored_when_akshare_cannot_apply_it(monkeypatch):
+    """An akshare without set_proxies (older build) must not crash a run."""
+    monkeypatch.setitem(__import__("sys").modules, "akshare", SimpleNamespace())
+    monkeypatch.setenv(akshare.PROXY_ENV, "http://127.0.0.1:7890")
+    monkeypatch.setattr(akshare, "_PROXY_APPLIED", None)
+
+    module = akshare._akshare_module()
+
+    assert module is not None
 
 
 # --- china-etf: symbol classification ---------------------------------------

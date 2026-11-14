@@ -232,6 +232,27 @@ The reflection layer resolves `.SH` tickers to Yahoo's `.SS` form for
 realized-return lookups, and the alpha benchmark for both Shanghai suffixes is
 `000001.SS` (SSE Composite).
 
+AKShare's price, indicator and verification-snapshot calls share one cached
+per-symbol OHLCV download, so a run fetches a symbol once rather than once per
+indicator; indicators use the same stockstats definitions as the snapshot, so
+the two agree on every value. Volumes are normalized to shares whichever
+source answered (East Money reports lots of 100). East Money's push2 rate limit is not retried:
+the vendor falls back to Sina immediately, because retrying a ban extends it.
+
+**Proxy.** To route AKShare's market-data requests through a proxy, set
+`TRADINGAGENTS_AKSHARE_PROXY` (kept separate from the process-wide
+`HTTP_PROXY`/`HTTPS_PROXY`):
+
+```bash
+export TRADINGAGENTS_AKSHARE_PROXY=http://127.0.0.1:7890
+# SOCKS5 (needs pip install "requests[socks]"):
+# export TRADINGAGENTS_AKSHARE_PROXY=socks5h://127.0.0.1:1080
+```
+
+The setting applies through AKShare's `set_proxies()`; on builds older than
+1.20 it is ignored (the standard `HTTP_PROXY`/`HTTPS_PROXY` variables still
+work).
+
 For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials. With Docker, put these keys in `.env` instead: the image does not include `.env` files.
 
 To run on your ChatGPT Plus or Pro plan instead of an API key, choose "Subscription" in the CLI's provider menu, or set `llm_provider: "chatgpt"`. Sign in once with `tradingagents login chatgpt`: it prints an address to open in your browser, which returns to this machine on `127.0.0.1`. When the browser runs on another machine, or TradingAgents runs in Docker (`docker compose run --rm tradingagents login chatgpt`), paste the address the browser ends up on. The sign-in is kept in `~/.tradingagents/chatgpt-auth.json`, and `tradingagents logout chatgpt` revokes it. Runs count toward your plan's usage limits, and the plan does not accept `temperature` or `max_tokens`.

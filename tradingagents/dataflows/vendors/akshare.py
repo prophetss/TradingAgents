@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import importlib
 import logging
-import math
+import os
 import time
 from datetime import datetime, timedelta
 
 import pandas as pd
 
-from tradingagents.dataflows.errors import NoMarketDataError, VendorNotConfiguredError
+from tradingagents.dataflows.errors import (
+    NoMarketDataError,
+    VendorError,
+    VendorNotConfiguredError,
+)
 from tradingagents.dataflows.symbols import a_share_code, is_china_etf_symbol
 
 logger = logging.getLogger(__name__)
@@ -61,32 +65,48 @@ _DESCRIPTIONS = {
     "vwma": "VWMA",
 }
 
-# Rows of OHLCV history each indicator needs before its first non-NaN value
-# (rolling windows in full; EMA chains warm up faster but are bounded by their
-# longest span). Used to size the fetch window in calendar days.
-_INDICATOR_WARMUP = {
-    "close_50_sma": 50,
-    "close_200_sma": 200,
-    "close_10_ema": 10,
-    "macd": 26,
-    "macds": 35,   # EMA26 + signal EMA9
-    "macdh": 35,
-    "rsi": 15,
-    "boll": 20,
-    "boll_ub": 20,
-    "boll_lb": 20,
-    "atr": 15,     # true range needs 1 shift + 14 rolling
-    "vwma": 20,
-}
+# Environment variable naming an HTTP(S)/SOCKS proxy for AKShare's own requests.
+# Kept separate from HTTP_PROXY/HTTPS_PROXY so a proxy set for the LLM clients
+# (or the whole process) does not silently route market-data traffic.
+PROXY_ENV = "TRADINGAGENTS_AKSHARE_PROXY"
+
+# The proxy last applied to akshare's global setting, so repeated calls do not
+# re-apply it. Reset to None to force re-application (tests).
+_PROXY_APPLIED: str | None = None
+
+
+def _apply_proxy(module, proxy: str) -> None:
+    """Point akshare's global proxy at ``proxy`` once per process/value.
+
+    akshare >= 1.20 exposes ``set_proxies``; older versions have no hook, and
+    the HTTP(S)_PROXY environment variables still work there through requests.
+    """
+    global _PROXY_APPLIED
+    if proxy == _PROXY_APPLIED:
+        return
+    setter = getattr(module, "set_proxies", None)
+    if setter is None:
+        logger.warning(
+            "TRADINGAGENTS_AKSHARE_PROXY is set but this akshare build has no "
+            "set_proxies(); use HTTP_PROXY/HTTPS_PROXY or upgrade akshare."
+        )
+        return
+    setter({"http": proxy, "https": proxy})
+    _PROXY_APPLIED = proxy
+    logger.info("AKShare requests use proxy %s", proxy)
 
 
 def _akshare_module():
     try:
-        return importlib.import_module("akshare")
+        module = importlib.import_module("akshare")
     except ImportError as exc:
         raise VendorNotConfiguredError(
             "AKShare is not installed. Install with: pip install 'tradingagents[akshare]'"
         ) from exc
+    proxy = os.environ.get(PROXY_ENV, "").strip()
+    if proxy:
+        _apply_proxy(module, proxy)
+    return module
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -104,6 +124,23 @@ def _normalize_symbol(symbol: str) -> str:
     return code
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Whether ``exc`` is AKShare's rate-limit signal (East Money's push2 ban).
+
+    ``Push2RateLimitError`` subclasses both ``RateLimitError`` and requests'
+    ``ConnectionError``, so without this check it would look like the transient
+    drops the retry ladder is meant for. Retrying a ban makes it last longer
+    (its own message says so), so it must fall through to the next source.
+    """
+    try:
+        from akshare.exceptions import RateLimitError as AkRateLimitError
+    except Exception:  # pragma: no cover - only very old akshare builds
+        AkRateLimitError = ()
+    if AkRateLimitError and isinstance(exc, AkRateLimitError):
+        return True
+    return type(exc).__name__ in {"RateLimitError", "Push2RateLimitError"}
+
+
 def _with_retries(description: str, func, *args, **kwargs):
     """Run an AKShare network call with a short retry ladder.
 
@@ -112,7 +149,8 @@ def _with_retries(description: str, func, *args, **kwargs):
     failures (no data, bad symbol) raise typed errors and are NOT retried -
     only connection-level exceptions match here. Note requests' ConnectionError
     does NOT subclass the builtin ConnectionError, so it is matched
-    explicitly.
+    explicitly. Rate-limit errors are never retried: they are the vendor asking
+    us to stop, and a retry extends the ban.
     """
     import requests as _requests
 
@@ -127,6 +165,12 @@ def _with_retries(description: str, func, *args, **kwargs):
         try:
             return func(*args, **kwargs)
         except retryable as exc:
+            if _is_rate_limit_error(exc):
+                logger.warning(
+                    "AKShare %s is rate limited (%s); not retrying, using the fallback instead",
+                    description, exc,
+                )
+                raise
             last = exc
             logger.warning(
                 "AKShare %s attempt %d/%d failed (%s); retrying in %.0fs",
@@ -241,17 +285,25 @@ def _fetch_history(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
     return _normalize_ohlcv(symbol, canonical, frame, start_date, end_date)
 
 
+# East Money reports 成交量 in 手 (lots of 100 shares); Sina and Yahoo report
+# shares. Normalizing to shares keeps Volume-based indicators (VWMA) and the
+# verified snapshot's volume comparable whichever source answered.
+_EM_VOLUME_LOT_SIZE = 100
+
+
 def _normalize_ohlcv(
     symbol: str, canonical: str, frame: pd.DataFrame, start_date: str, end_date: str
 ) -> pd.DataFrame:
     """Validate and normalize a raw OHLCV frame from any provider into the
     shared Date-indexed shape. Both providers' column sets are accepted
-    (East Money Chinese headers, Sina lowercase English)."""
+    (East Money Chinese headers, Sina lowercase English); volumes are returned
+    in shares."""
     if not isinstance(frame, pd.DataFrame):
         raise TypeError("AKShare history fetch must return a pandas DataFrame")
     if frame.empty:
         raise NoMarketDataError(symbol, canonical, f"no rows between {start_date} and {end_date}")
-    column_map = _COLUMN_MAP if "日期" in frame.columns else _SINA_COLUMN_MAP
+    from_east_money = "日期" in frame.columns
+    column_map = _COLUMN_MAP if from_east_money else _SINA_COLUMN_MAP
     missing = set(column_map) - set(frame.columns)
     if missing:
         raise ValueError(f"AKShare response is missing columns: {sorted(missing)}")
@@ -259,14 +311,60 @@ def _normalize_ohlcv(
     normalized["Date"] = pd.to_datetime(normalized["Date"], errors="raise")
     for column in normalized.columns[1:]:
         normalized[column] = pd.to_numeric(normalized[column], errors="raise")
+    if from_east_money:
+        normalized["Volume"] = normalized["Volume"] * _EM_VOLUME_LOT_SIZE
     normalized = normalized.sort_values("Date").set_index("Date")
     return normalized.loc[start_date:end_date]
+
+
+def _cached_history(
+    symbol: str, start_date: str | None, end_date: str
+) -> pd.DataFrame | None:
+    """Rows from the shared daily cache through ``end_date``, when it covers them.
+
+    The verification snapshot, the indicators and the stock-history tool all
+    read the same per-symbol OHLCV file, so a normal run fetches a symbol once.
+    ``start_date=None`` means "everything cached through end_date" (indicators
+    need the warm-up history). Returns None when the cache cannot serve the
+    request (it reaches past the 5-year download, or nothing is cached),
+    leaving the caller to fetch the exact range.
+    """
+    # Imported lazily: ohlcv imports this vendor for the A-share branch.
+    from tradingagents.dataflows.vendors.yahoo.ohlcv import load_ohlcv
+
+    try:
+        data = load_ohlcv(symbol, end_date, fill_gaps=False)
+    except NoMarketDataError:
+        # The loader covers five years back from today. A request inside that
+        # window was actually answered (with nothing), so there is nothing for
+        # a second, exact-range fetch to find; a request past it may still be
+        # served by the direct fetch below.
+        five_years_ago = pd.Timestamp.today().normalize() - pd.DateOffset(years=5)
+        if start_date is None or pd.Timestamp(start_date) >= five_years_ago:
+            raise
+        return None
+    except VendorError:
+        return None
+    if data is None or data.empty or "Date" not in data.columns:
+        return None
+    end = pd.Timestamp(end_date)
+    window = data[data["Date"] <= end]
+    if start_date is not None:
+        start = pd.Timestamp(start_date)
+        if data["Date"].min() > start:
+            return None
+        window = window[window["Date"] >= start]
+    if window.empty:
+        return None
+    return window.set_index("Date")
 
 
 def get_stock(symbol: str, start_date: str, end_date: str) -> str:
     """Return AKShare daily OHLCV data in TradingAgents' stock-tool format."""
     canonical = _normalize_symbol(symbol)
-    frame = _fetch_history(canonical, start_date, end_date)
+    frame = _cached_history(symbol, start_date, end_date)
+    if frame is None:
+        frame = _fetch_history(canonical, start_date, end_date)
     if frame.empty:
         raise NoMarketDataError(symbol, canonical, f"no rows between {start_date} and {end_date}")
     output = frame.copy()
@@ -286,49 +384,33 @@ def get_indicator(
     curr_date: str,
     look_back_days: int,
 ) -> str:
-    """Calculate the standard TradingAgents indicators from AKShare OHLCV data."""
+    """Calculate the standard TradingAgents indicators from AKShare OHLCV data.
+
+    Reads the same cached per-symbol history as the verification snapshot, so
+    the two agree on values and a run fetches the symbol once; the 5-year cache
+    window is far more than a 200-day warm-up needs.
+    """
     if indicator not in _DESCRIPTIONS:
         raise ValueError(f"Indicator {indicator} is not supported by AKShare")
-    current = datetime.strptime(curr_date, "%Y-%m-%d")
-    # Trading-day-aware warm-up: A-shares trade ~242 days per 365-calendar-day
-    # year, so a window sized in calendar days must be scaled up or slow
-    # indicators (200 SMA needs 200 trading rows) come back all-NaN and the
-    # caller sees NO_DATA forever. The old `+ 30 calendar days` arithmetic
-    # covered only ~152 trading rows - always short of 200.
-    warmup = _INDICATOR_WARMUP.get(indicator, 200)
-    needed_rows = warmup + max(look_back_days, 1) + 10  # safety margin
-    calendar_days = math.ceil(needed_rows * 365 / 242)
-    start = (current - timedelta(days=calendar_days)).strftime("%Y-%m-%d")
-    frame = _fetch_history(symbol, start, curr_date)
-    close = frame["Close"]
-    high = frame["High"]
-    low = frame["Low"]
-    volume = frame["Volume"]
-    values = pd.DataFrame(index=frame.index)
-    values["close_50_sma"] = close.rolling(50).mean()
-    values["close_200_sma"] = close.rolling(200).mean()
-    values["close_10_ema"] = close.ewm(span=10, adjust=False).mean()
-    values["macd"] = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
-    values["macds"] = values["macd"].ewm(span=9, adjust=False).mean()
-    values["macdh"] = values["macd"] - values["macds"]
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = -delta.clip(upper=0).rolling(14).mean()
-    values["rsi"] = 100 - (100 / (1 + gain / loss.replace(0, pd.NA)))
-    values["boll"] = close.rolling(20).mean()
-    deviation = close.rolling(20).std()
-    values["boll_ub"] = values["boll"] + 2 * deviation
-    values["boll_lb"] = values["boll"] - 2 * deviation
-    true_range = pd.concat(
-        [high - low, (high - close.shift()).abs(), (low - close.shift()).abs()],
-        axis=1,
-    ).max(axis=1)
-    values["atr"] = true_range.rolling(14).mean()
-    values["vwma"] = (close * volume).rolling(20).sum() / volume.rolling(20).sum()
-    result = values[[indicator]].dropna().tail(look_back_days).round(4)
-    if result.empty:
+    frame = _cached_history(symbol, None, curr_date)
+    if frame is None or frame.empty:
+        raise NoMarketDataError(
+            symbol, _normalize_symbol(symbol), f"no rows on or before {curr_date}"
+        )
+
+    # stockstats is the library the verification snapshot uses, so both tools
+    # report the same number for the same bar (a hand-rolled RSI/ATR drifted
+    # from the snapshot by a few points and ~10% respectively).
+    from stockstats import wrap
+
+    history = wrap(frame.reset_index())
+    values = history[["Date", indicator]].dropna().tail(max(int(look_back_days), 1)).copy()
+    if values.empty:
         raise NoMarketDataError(symbol, _normalize_symbol(symbol), "not enough rows for indicator")
-    return f"# {_DESCRIPTIONS[indicator]} for {symbol} as of {curr_date}\n\n{result.to_csv()}"
+    values[indicator] = values[indicator].round(4)
+    values["Date"] = pd.to_datetime(values["Date"]).dt.strftime("%Y-%m-%d")
+    table = values.set_index("Date").to_csv()
+    return f"# {_DESCRIPTIONS[indicator]} for {symbol} as of {curr_date}\n\n{table}"
 
 
 # --- Fundamentals (East Money statement endpoints) ---------------------------
