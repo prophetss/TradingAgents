@@ -249,9 +249,9 @@ export TRADINGAGENTS_AKSHARE_PROXY=http://127.0.0.1:7890
 # export TRADINGAGENTS_AKSHARE_PROXY=socks5h://127.0.0.1:1080
 ```
 
-The setting applies through AKShare's `set_proxies()`; on builds older than
-1.20 it is ignored (the standard `HTTP_PROXY`/`HTTPS_PROXY` variables still
-work).
+The setting applies through AKShare's `set_proxies()`. The adapter targets
+AKShare 1.20.65 (the post-rename endpoints); the standard
+`HTTP_PROXY`/`HTTPS_PROXY` variables also work.
 
 For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials. With Docker, put these keys in `.env` instead: the image does not include `.env` files.
 

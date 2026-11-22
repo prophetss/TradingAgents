@@ -32,7 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 akshare = [
-    "akshare>=1.20.22",
+    "akshare>=1.20.65",
 ]
 dev = [
     "ruff>=0.16",

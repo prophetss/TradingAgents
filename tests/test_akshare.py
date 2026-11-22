@@ -40,7 +40,7 @@ def _isolated_cache(tmp_path, _isolate_config):
 @pytest.fixture()
 def fake_akshare(monkeypatch):
     fake = SimpleNamespace(
-        stock_zh_a_hist=lambda **kwargs: _history_frame(),
+        stock_zh_a_hist_em=lambda **kwargs: _history_frame(),
     )
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
     return fake
@@ -526,7 +526,7 @@ def test_fetch_history_retries_transient_disconnects(monkeypatch):
             )
         return _history_frame()
 
-    fake = SimpleNamespace(stock_zh_a_hist=flaky_hist)
+    fake = SimpleNamespace(stock_zh_a_hist_em=flaky_hist)
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
     monkeypatch.setattr(akshare.time, "sleep", lambda *_: None)  # no test delay
 
@@ -554,8 +554,8 @@ def test_fetch_history_raises_after_exhausted_retries(monkeypatch):
         raise _requests.exceptions.ConnectionError("connection refused")
 
     fake = SimpleNamespace(
-        stock_zh_a_hist=always_down,
-        stock_zh_a_daily=sina_down,
+        stock_zh_a_hist_em=always_down,
+        stock_zh_a_hist_sina=sina_down,
     )
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
     monkeypatch.setattr(akshare.time, "sleep", lambda *_: None)
@@ -577,7 +577,7 @@ def test_no_data_errors_are_not_retried(monkeypatch):
         calls["n"] += 1
         return pd.DataFrame()  # empty -> NoMarketDataError in _fetch_history
 
-    fake = SimpleNamespace(stock_zh_a_hist=empty_hist)
+    fake = SimpleNamespace(stock_zh_a_hist_em=empty_hist)
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
 
     with pytest.raises(akshare.NoMarketDataError):
@@ -615,8 +615,8 @@ def test_sina_fallback_when_eastmoney_dark(monkeypatch):
         return _sina_frame()
 
     fake = SimpleNamespace(
-        stock_zh_a_hist=dark_hist,
-        stock_zh_a_daily=working_daily,
+        stock_zh_a_hist_em=dark_hist,
+        stock_zh_a_hist_sina=working_daily,
     )
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
     monkeypatch.setattr(akshare.time, "sleep", lambda *_: None)
@@ -642,7 +642,7 @@ def test_east_money_volume_is_reported_in_shares(monkeypatch):
             "成交量": [1000, 1100],  # 手
         }
     )
-    fake = SimpleNamespace(stock_zh_a_hist=lambda **kwargs: frame)
+    fake = SimpleNamespace(stock_zh_a_hist_em=lambda **kwargs: frame)
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
 
     result = akshare.get_stock("600519.SH", "2026-01-01", "2026-01-02")
@@ -669,7 +669,7 @@ def test_sina_volume_stays_in_shares(monkeypatch):
             }
         )
 
-    fake = SimpleNamespace(stock_zh_a_hist=dark_hist, stock_zh_a_daily=sina_history)
+    fake = SimpleNamespace(stock_zh_a_hist_em=dark_hist, stock_zh_a_hist_sina=sina_history)
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
     monkeypatch.setattr(akshare.time, "sleep", lambda *_: None)
 
@@ -698,7 +698,7 @@ def test_rate_limit_is_not_retried(monkeypatch):
         calls["sina"] += 1
         return _sina_frame()
 
-    fake = SimpleNamespace(stock_zh_a_hist=limited, stock_zh_a_daily=sina_history)
+    fake = SimpleNamespace(stock_zh_a_hist_em=limited, stock_zh_a_hist_sina=sina_history)
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
     monkeypatch.setattr(akshare.time, "sleep", lambda *_: None)
 
@@ -707,6 +707,42 @@ def test_rate_limit_is_not_retried(monkeypatch):
     assert calls["em"] == 1           # no retry ladder on a rate limit
     assert calls["sina"] == 1         # fell back once
     assert "# Stock data for 600519" in result
+
+
+@pytest.mark.unit
+def test_akshare_calls_are_serialized():
+    """AKShare's Sina endpoint decodes with py_mini_racer (V8), which aborts the
+    process if two parallel analysts enter it at once; the vendor serializes."""
+    import threading
+    import time as _time
+
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+
+    def fetch(**kwargs):
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        _time.sleep(0.05)
+        with guard:
+            active -= 1
+        return "ok"
+
+    results = []
+
+    def worker():
+        results.append(akshare._with_retries("test", fetch))
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert results == ["ok"] * 4
+    assert peak == 1
 
 
 # --- proxy support ------------------------------------------------------------
@@ -789,10 +825,10 @@ def fake_akshare_etf(monkeypatch):
     calls = {"em": 0, "sina": 0}
 
     fake = SimpleNamespace(
-        stock_zh_a_hist=lambda **kw: pytest.fail("stock endpoint must not serve ETFs"),
+        stock_zh_a_hist_em=lambda **kw: pytest.fail("stock endpoint must not serve ETFs"),
         fund_etf_hist_em=lambda **kw: (calls.__setitem__("em", calls["em"] + 1), _etf_em_frame())[1],
         fund_etf_hist_sina=lambda **kw: (calls.__setitem__("sina", calls["sina"] + 1), _sina_frame())[1],
-        stock_zh_a_daily=lambda **kw: pytest.fail("stock Sina endpoint must not serve ETFs"),
+        stock_zh_a_hist_sina=lambda **kw: pytest.fail("stock Sina endpoint must not serve ETFs"),
     )
     monkeypatch.setitem(__import__("sys").modules, "akshare", fake)
     return calls
@@ -821,8 +857,8 @@ def test_etf_sina_fallback_filters_window(fake_akshare_etf, monkeypatch):
         SimpleNamespace(
             fund_etf_hist_em=dark_em,
             fund_etf_hist_sina=lambda **kw: _sina_frame(),
-            stock_zh_a_hist=lambda **kw: pytest.fail("stock endpoint must not serve ETFs"),
-            stock_zh_a_daily=lambda **kw: pytest.fail("stock Sina endpoint must not serve ETFs"),
+            stock_zh_a_hist_em=lambda **kw: pytest.fail("stock endpoint must not serve ETFs"),
+            stock_zh_a_hist_sina=lambda **kw: pytest.fail("stock Sina endpoint must not serve ETFs"),
         ),
     )
     monkeypatch.setattr(akshare.time, "sleep", lambda *_: None)
@@ -888,14 +924,15 @@ def test_etf_ohlcv_still_routes_to_akshare(fake_akshare_etf):
 
 
 def _macro_cpi_frame():
-    dates = pd.date_range("2026-04-01", periods=5, freq="MS")
+    # Shape of akshare >= 1.20.42's macro_china_cpi: one table per family with
+    # month-on-month, year-on-year and level columns side by side.
     return pd.DataFrame(
         {
-            "商品": ["中国CPI月率报告"] * 5,
-            "日期": [d.date() for d in dates],
-            "今值": [0.2, 0.3, 0.1, 0.4, 0.2],
-            "预测值": [0.2, 0.2, 0.2, 0.3, 0.2],
-            "前值": [0.1, 0.2, 0.3, 0.1, 0.4],
+            "月份": ["2026年04月份", "2026年05月份", "2026年06月份", "2026年07月份", "2026年08月份"],
+            "全国-当月": [100.2, 100.3, 100.1, 100.4, 100.2],
+            "全国-同比增长": [0.4, 0.5, 0.3, 0.6, 0.4],
+            "全国-环比增长": [0.2, 0.3, 0.1, 0.4, 0.2],
+            "全国-累计": [100.3, 100.3, 100.3, 100.3, 100.3],
         }
     )
 
@@ -903,12 +940,28 @@ def _macro_cpi_frame():
 @pytest.fixture()
 def fake_akshare_macro(monkeypatch):
     fake = SimpleNamespace(
-        macro_china_cpi_monthly=lambda: _macro_cpi_frame(),
-        macro_china_lpr=lambda: pd.DataFrame(
+        macro_china_cpi=lambda: _macro_cpi_frame(),
+        interest_rate_lpr_em=lambda: pd.DataFrame(
             {
-                "TRADE_DATE": pd.date_range("2026-01-20", periods=8, freq="MS"),
-                "LPR1Y": [3.0] * 8,
-                "LPR5Y": [3.5] * 8,
+                "日期": pd.date_range("2026-01-20", periods=8, freq="MS"),
+                "1年期LPR": [3.0] * 8,
+                "5年期以上LPR": [3.5] * 8,
+                "短期贷款利率": [3.1] * 8,
+                "中长期贷款利率": [3.5] * 8,
+            }
+        ),
+        macro_china_gdp=lambda: pd.DataFrame(
+            {
+                "季度": ["2026年第1-3季度", "2026年第1-2季度", "2026年第1季度"],
+                "国内生产总值-绝对值": [1071071.2, 695704.0, 334192.9],
+                "国内生产总值-同比增长": [4.6, 4.7, 5.0],
+            }
+        ),
+        macro_china_pmi=lambda: pd.DataFrame(
+            {
+                "月份": ["2026年09月份", "2026年10月份"],
+                "制造业-指数": [50.1, 49.3],
+                "非制造业-指数": [50.2, 49.7],
             }
         ),
     )
@@ -928,13 +981,38 @@ def test_macro_cpi_report_shape(fake_akshare_macro):
 
 
 @pytest.mark.unit
-def test_macro_lpr_uses_trade_date_column(fake_akshare_macro):
+def test_macro_lpr_uses_date_column(fake_akshare_macro):
     from tradingagents.dataflows.vendors.akshare_macro import get_macro_data
 
     result = get_macro_data("lpr", "2026-08-24")
 
     assert "## AKShare 中国宏观: LPR 1Y" in result
     assert "3.0" in result
+
+
+@pytest.mark.unit
+def test_macro_gdp_uses_quarter_end_dates(fake_akshare_macro):
+    """Cumulative GDP rows are keyed by 季度; the window filter needs a real
+    date, so "2026年第1-3季度" becomes 2026-09-30."""
+    from tradingagents.dataflows.vendors.akshare_macro import get_macro_data
+
+    result = get_macro_data("gdp", "2026-11-20")
+
+    assert "GDP YoY" in result
+    assert "| 2026-09-30 | 4.6 |" in result
+    assert "| 2026-06-30 | 4.7 |" in result
+    assert "| 2026-03-31 | 5.0 |" in result
+
+
+@pytest.mark.unit
+def test_macro_pmi_uses_manufacturing_index(fake_akshare_macro):
+    from tradingagents.dataflows.vendors.akshare_macro import get_macro_data
+
+    result = get_macro_data("pmi", "2026-11-20")
+
+    assert "Manufacturing PMI" in result
+    assert "Units: index" in result
+    assert "| 2026-10-01 | 49.3 |" in result
 
 
 @pytest.mark.unit

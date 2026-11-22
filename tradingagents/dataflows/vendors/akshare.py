@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -31,6 +32,13 @@ logger = logging.getLogger(__name__)
 _FETCH_RETRIES = 3
 _RETRY_BACKOFF_SECONDS = 2.0
 
+# AKShare's Sina endpoints decode their payload with py_mini_racer (V8), which
+# is not thread-safe: two analysts calling it at once abort the process with
+# "Check failed: !IsConfigurablePoolInitialized()". The analysts run in
+# parallel, so every akshare call is serialized here. The lock covers the
+# whole request (network + JS decode), and akshare is the only caller.
+_AKSHARE_LOCK = threading.RLock()
+
 _COLUMN_MAP = {
     "日期": "Date",
     "开盘": "Open",
@@ -40,7 +48,7 @@ _COLUMN_MAP = {
     "成交量": "Volume",
 }
 
-# Sina fallback endpoint (stock_zh_a_daily) uses lowercase English columns.
+# Sina fallback endpoint (stock_zh_a_hist_sina) uses lowercase English columns.
 _SINA_COLUMN_MAP = {
     "date": "Date",
     "open": "Open",
@@ -163,7 +171,8 @@ def _with_retries(description: str, func, *args, **kwargs):
     last: Exception | None = None
     for attempt in range(_FETCH_RETRIES):
         try:
-            return func(*args, **kwargs)
+            with _AKSHARE_LOCK:
+                return func(*args, **kwargs)
         except retryable as exc:
             if _is_rate_limit_error(exc):
                 logger.warning(
@@ -257,8 +266,8 @@ def _fetch_history(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
     end = datetime.strptime(end_date, "%Y-%m-%d").strftime("%Y%m%d")
     try:
         frame = _with_retries(
-            "stock_zh_a_hist",
-            _akshare_module().stock_zh_a_hist,
+            "stock_zh_a_hist_em",
+            _akshare_module().stock_zh_a_hist_em,
             symbol=canonical,
             period="daily",
             start_date=start,
@@ -271,13 +280,14 @@ def _fetch_history(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
         # hosts stay 200). Fall back to the Sina daily endpoint - a different
         # provider/CDN serving the same qfq daily bars - before giving up.
         logger.warning(
-            "AKShare stock_zh_a_hist unusable (%s); trying Sina fallback",
+            "AKShare stock_zh_a_hist_em unusable (%s); trying Sina fallback",
             primary_error,
         )
         frame = _with_retries(
-            "stock_zh_a_daily",
-            _akshare_module().stock_zh_a_daily,
+            "stock_zh_a_hist_sina",
+            _akshare_module().stock_zh_a_hist_sina,
             symbol=_sina_symbol(symbol),
+            period="daily",
             start_date=start_date,
             end_date=end_date,
             adjust="qfq",

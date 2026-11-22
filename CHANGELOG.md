@@ -21,6 +21,13 @@ Breaking changes within the 0.x line are called out explicitly.
   (CPI MoM/YoY, PPI, LPR 1Y/5Y, GDP YoY, M2/M1 YoY, manufacturing PMI) as
   fallback - keyless, via East Money/统计局 endpoints. Both report in the same
   markdown shape so the news analyst needs no per-vendor handling.
+- **AKShare 1.20.65 compatibility.** Migrated to the endpoints renamed in
+  1.20.42-1.20.48: `stock_zh_a_hist_em`, `stock_zh_a_hist_sina`,
+  `interest_rate_lpr_em` and `macro_china_money_supply_em`, and replaced the
+  removed per-release CPI/PPI/GDP/PMI endpoints with `macro_china_cpi`,
+  `macro_china_ppi`, `macro_china_gdp` and `macro_china_pmi`. Cumulative GDP
+  rows ("2026年第1-3季度") are dated at their quarter end. The `akshare`
+  extra now requires 1.20.65.
 - **AKShare proxy support.** `TRADINGAGENTS_AKSHARE_PROXY` routes the vendor's
   own requests through an HTTP(S)/SOCKS proxy via `ak.set_proxies()`, kept
   apart from the process-wide `HTTP_PROXY`/`HTTPS_PROXY`. Requires akshare
@@ -59,6 +66,11 @@ Breaking changes within the 0.x line are called out explicitly.
   subclasses requests' connection error and was retried by the ladder, which
   the vendor says extends the ban; it now falls through to the Sina source on
   the first hit.
+- **Parallel analysts crashed on the Sina fallback.** AKShare's Sina
+  endpoints decode their payload with py_mini_racer (V8), which is not
+  thread-safe: two analysts entering it together aborted the whole process
+  ("Check failed: !IsConfigurablePoolInitialized()"). AKShare calls are now
+  serialized with a lock, which the analysts' parallelism makes necessary.
 - **Indicators disagreed with the verification snapshot.** `get_indicators`
   computed RSI/ATR with hand-rolled formulas while the snapshot used
   stockstats, so the two tools reported different values for the same bar
