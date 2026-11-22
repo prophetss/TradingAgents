@@ -1,0 +1,9 @@
+[Unit]
+Description=Notify that the TradingAgents ntfy bridge stopped
+After=ntfy-bridge.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=<REPO>
+EnvironmentFile=%h/.tradingagents/ntfy-bridge/env
+ExecStart=<REPO>/.venv/bin/python -m ntfy_bridge onfailure

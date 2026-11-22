@@ -1,0 +1,21 @@
+[Unit]
+Description=TradingAgents ntfy bridge (phone → local analysis → markdown)
+After=network-online.target
+Wants=network-online.target
+OnFailure=ntfy-bridge-failure.service
+
+[Service]
+Type=notify
+WorkingDirectory=<REPO>
+EnvironmentFile=%h/.tradingagents/ntfy-bridge/env
+ExecStart=<REPO>/.venv/bin/python -m ntfy_bridge serve
+Restart=always
+RestartSec=5
+WatchdogSec=60
+TimeoutStopSec=30
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
